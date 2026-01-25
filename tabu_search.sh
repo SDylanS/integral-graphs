@@ -1,37 +1,21 @@
 #!/bin/bash
-
-# ==========================================
-# Skrypt uruchamiający generator Tabu Search
-# ==========================================
-
-# Parametry domyślne (można edytować)
-N_VERTICES=8          # Liczba wierzchołków
-OUTPUT_FILE="wynik_tabu.g6"
-ITERATIONS=2000       # Ile prób wykonać
-TABU_SIZE=15          # Jak długo pamiętać zabronione ruchy
-
-# Sprawdzenie zależności
-if ! python3 -c "import numpy, networkx" &> /dev/null; then
-    echo "[BLAD] Brakuje bibliotek Pythona."
-    echo "Zainstaluj: pip install numpy networkx"
-    exit 1
-fi
-
-echo "--- Uruchamianie Tabu Search ---"
-echo "Szukam grafu całkowitego dla N=$N_VERTICES..."
-
-# Uruchomienie skryptu Python z poprawną nazwą
-python3 generator_Tabu_search.py \
-    $N_VERTICES \
-    $OUTPUT_FILE \
-    --iter $ITERATIONS \
-    --tabu $TABU_SIZE
-
-# Sprawdzenie wyniku
-if [ $? -eq 0 ]; then
-    echo "--- Sukces ---"
-    echo "Zawartość pliku $OUTPUT_FILE:"
-    cat $OUTPUT_FILE
-else
-    echo "[BLAD] Wystąpił błąd podczas wykonywania skryptu Python."
-fi
+# KTZ 2025 - Tabu Search wrapper
+#./tabu_search.sh 15 37 $((2**29)) 0 
+ 
+n=$1
+e=$2
+mod=$3
+pierwszy=$4
+t=640000
+ 
+echo czas: $(date)  
+ 
+for (( res=$pierwszy; res < $mod ; res+=1 ))
+do 
+ echo "time python3 generator_Tabu_search.py $n $e $res/$mod 2>/dev/null | ./sito5 $t | tee -a wynikTabu$n_$e.txt"
+ echo "./checkTabu.sh $n $e $mod $res" > tabu_todo$n_$e.sh
+ time python3 generator_Tabu_search.py $n $e $res/$mod 2>/dev/null | ./sito5 $t | tee -a wynikTabu$n_$e.txt
+done 
+ 
+echo czas: $(date) 
+echo "# wszystko zrobione " > tabu_todo$n_$e.sh

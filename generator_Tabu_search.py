@@ -1,140 +1,131 @@
-import argparse
-import random
-import numpy as np
+#!/usr/bin/env python3
 import networkx as nx
 import sys
+import random
+import numpy as np
 
-# --- KONFIGURACJA LOGIKI TABU SEARCH ---
+# Domyślny limit iteracji, jeśli nie zostanie podany
+DEFAULT_LIMIT = 640000
 
-def objective_function(adj_matrix):
+def get_eigen_cost(adj_matrix):
     """
-    Funkcja celu dla grafów całkowitych (Integral Graphs).
-    Oblicza sumę odchyleń wartości własnych od najbliższej liczby całkowitej.
-    0.0 = graf całkowity.
+    Oblicza koszt: suma odchyleń wartości własnych od liczb całkowitych.
+    0.0 oznacza graf całkowity.
     """
-    # Obliczamy wartości własne (eigenvalues) dla macierzy symetrycznej
+    # Obliczamy wartości własne (macierz jest symetryczna/hermitowska)
     eigenvalues = np.linalg.eigvalsh(adj_matrix)
-    
-    # Koszt to suma różnic między wartością własną a jej zaokrągleniem
+    # Koszt = suma odległości do najbliższej liczby całkowitej
     cost = sum(abs(ev - round(ev)) for ev in eigenvalues)
     return cost
 
-def get_neighbors_random_subset(n, sample_size=20):
-    """
-    Zwraca losowy podzbiór możliwych ruchów (par wierzchołków), 
-    aby przyspieszyć działanie dla większych grafów.
-    """
-    moves = []
-    # Generujemy losowe pary (u, v)
-    for _ in range(sample_size):
-        u = random.randint(0, n - 1)
+def flip_edge_matrix(matrix, n):
+    """Odwraca losową krawędź w macierzy sąsiedztwa (mutacja)"""
+    u = random.randint(0, n - 1)
+    v = random.randint(0, n - 1)
+    while u == v:
         v = random.randint(0, n - 1)
-        while u == v:
-            v = random.randint(0, n - 1)
-        # Sortujemy, żeby (u,v) było to samo co (v,u)
-        if u > v:
-            u, v = v, u
-        moves.append((u, v))
-    # Usuwamy duplikaty
-    return list(set(moves))
+    
+    # Odwracamy (0->1 lub 1->0)
+    val = 1 - matrix[u, v]
+    matrix[u, v] = val
+    matrix[v, u] = val
+    return matrix, (u, v)
 
-def flip_edge(adj_matrix, u, v):
-    """Zwraca nową macierz z odwróconą krawędzią między u i v"""
-    new_matrix = adj_matrix.copy()
-    val = 1 - new_matrix[u, v]
-    new_matrix[u, v] = val
-    new_matrix[v, u] = val
-    return new_matrix
+def main():
+    if len(sys.argv) < 3:
+        sys.stderr.write("Użycie: python3 generator_Tabu_search.py <n> <k> [limit/seed]\n")
+        sys.exit(1)
 
-def tabu_search(n_vertices, max_iter, tabu_tenure):
-    # 1. Inicjalizacja: Losowy graf
-    current_matrix = np.random.randint(0, 2, (n_vertices, n_vertices))
-    np.fill_diagonal(current_matrix, 0)
-    # Symetryzacja
-    current_matrix = np.tril(current_matrix) + np.tril(current_matrix, -1).T
+    n = int(sys.argv[1])
+    k = int(sys.argv[2]) # Używamy k jako startowej liczby krawędzi
+
+    # Argument 3: limit lub seed (format ułamkowy)
+    arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
     
-    best_matrix = current_matrix.copy()
-    current_score = objective_function(current_matrix)
-    best_score = current_score
+    limit = DEFAULT_LIMIT
     
-    tabu_list = [] # Lista par (u, v), które są 'zablokowane'
+    # Logika obsługi seeda/limitu (identyczna jak w gnk)
+    if '/' in arg3:
+        parts = arg3.split('/')
+        seed_val = int(parts[0])
+        random.seed(seed_val)
+        np.random.seed(seed_val)
+    else:
+        limit = int(arg3)
+        random.seed()
+        np.random.seed(None)
+
+    # --- INICJALIZACJA TABU SEARCH ---
+    # Tworzymy startowy graf losowy o zadanej gęstości
+    current_G = nx.gnm_random_graph(n, k)
+    current_matrix = nx.to_numpy_array(current_G)
     
-    print(f"Start Tabu Search | N={n_vertices} | Iter={max_iter} | TabuLen={tabu_tenure}")
+    best_cost = get_eigen_cost(current_matrix)
     
-    for it in range(1, max_iter + 1):
-        # Pobieramy próbkę sąsiadów (dla szybkości nie sprawdzamy wszystkich N*(N-1)/2)
-        # Dla małych grafów można zwiększyć sample_size
-        moves = get_neighbors_random_subset(n_vertices, sample_size=int(n_vertices * 2))
+    tabu_list = []
+    tabu_len = 15  # Długość pamięci Tabu
+    
+    count = 0
+
+    # Pętla generująca/szukająca
+    # W tym przypadku 'limit' traktujemy jako liczbę kroków algorytmu
+    while count < limit:
         
-        best_neighbor_matrix = None
-        best_neighbor_score = float('inf')
-        move_to_tabu = None
-        found_move = False
+        # 1. Wykonujemy ruch (prosta wersja: losowy sąsiad + tabu check)
+        # Kopiujemy macierz, żeby sprawdzić ruch
+        candidate_matrix = current_matrix.copy()
+        candidate_matrix, move = flip_edge_matrix(candidate_matrix, n)
         
-        for (u, v) in moves:
-            neighbor = flip_edge(current_matrix, u, v)
-            score = objective_function(neighbor)
-            
-            # Sprawdzenie statusu Tabu
-            is_tabu = (u, v) in tabu_list
-            
-            # Kryterium aspiracji: akceptujemy Tabu tylko jeśli wynik jest lepszy niż GLOBALNE optimum
-            if (not is_tabu) or (score < best_score):
-                if score < best_neighbor_score:
-                    best_neighbor_matrix = neighbor
-                    best_neighbor_score = score
-                    move_to_tabu = (u, v)
-                    found_move = True
-
-        # Jeśli nie znaleziono ruchu w wylosowanej próbce, idziemy dalej
-        if not found_move:
-            continue
-
-        # Aktualizacja bieżącego stanu
-        current_matrix = best_neighbor_matrix
-        current_score = best_neighbor_score
+        # Sprawdzamy koszt kandydata
+        candidate_cost = get_eigen_cost(candidate_matrix)
         
-        # Aktualizacja najlepszego globalnie
-        if current_score < best_score:
-            best_score = current_score
-            best_matrix = current_matrix.copy()
-            # print(f"Iter {it}: Nowy najlepszy koszt = {best_score:.4f}")
+        # Logika Tabu: Akceptujemy jeśli nie jest Tabu LUB jest lepszy niż cokolwiek co widzieliśmy (aspiracja)
+        is_tabu = move in tabu_list
+        
+        if (not is_tabu) or (candidate_cost < best_cost - 0.001):
+            # Akceptujemy ruch
+            current_matrix = candidate_matrix
             
-            # Jeśli graf jest idealnie całkowity
-            if best_score < 1e-7:
-                print(f"ZNALEZIONO GRAF CAŁKOWITY w iteracji {it}!")
-                break
+            # Aktualizacja Tabu
+            tabu_list.append(move)
+            if len(tabu_list) > tabu_len:
+                tabu_list.pop(0)
+                
+            # Czy to graf całkowity? (Koszt bliski 0)
+            if candidate_cost < 1e-7:
+                # Konwersja do NetworkX dla graph6
+                G_out = nx.from_numpy_array(current_matrix)
+                
+                # Wypisujemy w formacie graph6 BEZ nagłówka
+                output = nx.to_graph6_string(G_out, header=False)
+                sys.stdout.write(output + '\n')
+                sys.stdout.flush() # Ważne przy pipe
+                
+                # Restartujemy szukanie z nowego losowego punktu, 
+                # żeby nie wypisywać w kółko tego samego grafu
+                current_G = nx.gnm_random_graph(n, k)
+                current_matrix = nx.to_numpy_array(current_G)
+                tabu_list = []
+                best_cost = get_eigen_cost(current_matrix)
+            
+            # Aktualizacja najlepszego kosztu lokalnego
+            if candidate_cost < best_cost:
+                best_cost = candidate_cost
 
-        # Aktualizacja listy Tabu
-        tabu_list.append(move_to_tabu)
-        if len(tabu_list) > tabu_tenure:
-            tabu_list.pop(0)
-
-    return best_matrix, best_score
-
-def save_to_graph6(adj_matrix, filename):
-    """Konwersja macierzy numpy do formatu graph6 i zapis do pliku"""
-    G = nx.from_numpy_array(adj_matrix)
-    # Header=False jest ważne, żeby inne narzędzia (np. labelg) to czytały bez problemów
-    g6_string = nx.to_graph6_bytes(G, header=False).decode("ascii").strip()
-    
-    with open(filename, "w") as f:
-        f.write(g6_string + "\n")
-    print(f"Wynik zapisano w: {filename}")
-
-# --- URUCHOMIENIE ---
+        # Co jakiś czas (np. co 1000 iteracji bez sukcesu) warto zrobić restart,
+        # żeby nie utknąć w minimum lokalnym
+        if count % 2000 == 0:
+             current_G = nx.gnm_random_graph(n, k)
+             current_matrix = nx.to_numpy_array(current_G)
+             tabu_list = []
+        
+        count += 1
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("n", type=int, help="Liczba wierzchołków")
-    parser.add_argument("output_file", type=str, help="Ścieżka do pliku wynikowego")
-    parser.add_argument("--iter", type=int, default=1000, help="Max iteracji")
-    parser.add_argument("--tabu", type=int, default=10, help="Długość listy tabu")
-
-    args = parser.parse_args()
-
-    # Uruchomienie algorytmu
-    result_matrix, final_score = tabu_search(args.n, args.iter, args.tabu)
-    
-    # Zapis wyniku
-    save_to_graph6(result_matrix, args.output_file)
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except BrokenPipeError:
+        # Obsługa zamknięcia potoku przez sito5/head
+        sys.stderr.close()

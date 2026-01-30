@@ -4,122 +4,122 @@ import sys
 import random
 import numpy as np
 
-# Domyślny limit iteracji, jeśli nie zostanie podany
-DEFAULT_LIMIT = 640000
+# Limit iteracji
+DEFAULT_LIMIT = 500000 
 
-def get_eigen_cost(adj_matrix):
-    """
-    Oblicza koszt: suma odchyleń wartości własnych od liczb całkowitych.
-    0.0 oznacza graf całkowity.
-    """
-    # Obliczamy wartości własne (macierz jest symetryczna/hermitowska)
+def get_integrality_energy(adj_matrix):
     eigenvalues = np.linalg.eigvalsh(adj_matrix)
-    # Koszt = suma odległości do najbliższej liczby całkowitej
-    cost = sum(abs(ev - round(ev)) for ev in eigenvalues)
-    return cost
+    energy = sum(abs(ev - round(ev)) for ev in eigenvalues)
+    return energy
 
-def flip_edge_matrix(matrix, n):
-    """Odwraca losową krawędź w macierzy sąsiedztwa (mutacja)"""
-    u = random.randint(0, n - 1)
-    v = random.randint(0, n - 1)
-    while u == v:
-        v = random.randint(0, n - 1)
+def swap_edge_matrix(matrix, n):
+    rows, cols = np.triu_indices(n, k=1)
+    existing_edges = [(r, c) for r, c in zip(rows, cols) if matrix[r, c] == 1]
+    non_edges = [(r, c) for r, c in zip(rows, cols) if matrix[r, c] == 0]
     
-    # Odwracamy (0->1 lub 1->0)
-    val = 1 - matrix[u, v]
-    matrix[u, v] = val
-    matrix[v, u] = val
-    return matrix, (u, v)
+    if not existing_edges or not non_edges:
+        return matrix, (0, 0, 0, 0)
+    
+    u, v = random.choice(existing_edges)
+    x, y = random.choice(non_edges)
+    
+    matrix[u, v] = 0; matrix[v, u] = 0
+    matrix[x, y] = 1; matrix[y, x] = 1
+    
+    return matrix, (u, v, x, y)
 
 def main():
     if len(sys.argv) < 3:
         sys.stderr.write("Użycie: python3 generator_Tabu_search.py <n> <k> [limit/seed]\n")
         sys.exit(1)
 
-    n = int(sys.argv[1])
-    k = int(sys.argv[2]) # Używamy k jako startowej liczby krawędzi
+    try:
+        n = int(sys.argv[1])
+        k = int(sys.argv[2])
+        
+        # --- ZMIANA 1: Zapisujemy ID paczki do zmiennej ---
+        arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
+        package_id = arg3  # <--- Zapamiętujemy to (np. "25/536870912")
+        
+        if '/' in arg3:
+            parts = arg3.split('/')
+            seed_val = int(parts[0]) + int(parts[1])
+            random.seed(seed_val)
+            np.random.seed(seed_val)
+            limit = DEFAULT_LIMIT
+        else:
+            limit = int(arg3)
+            random.seed()
+            np.random.seed(None)
+            
+    except ValueError:
+        return
 
-    # Argument 3: limit lub seed (format ułamkowy)
-    arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
-    
-    limit = DEFAULT_LIMIT
-    
-    # Logika obsługi seeda/limitu (identyczna jak w gnk)
-    if '/' in arg3:
-        parts = arg3.split('/')
-        seed_val = int(parts[0])
-        random.seed(seed_val)
-        np.random.seed(seed_val)
-    else:
-        limit = int(arg3)
-        random.seed()
-        np.random.seed(None)
-
-    # --- INICJALIZACJA TABU SEARCH ---
-    # Tworzymy startowy graf losowy o zadanej gęstości
     current_G = nx.gnm_random_graph(n, k)
     current_matrix = nx.to_numpy_array(current_G)
-    
-    best_cost = get_eigen_cost(current_matrix)
+    best_energy = get_integrality_energy(current_matrix)
     
     tabu_list = []
-    tabu_len = 15  # Długość pamięci Tabu
+    tabu_tenure = 18       
+    max_no_imp = 2000      
+    no_improvement_iter = 0
+    iter_count = 0
     
-    count = 0
-
-    # Pętla generująca/szukająca
-    # W tym przypadku 'limit' traktujemy jako liczbę kroków algorytmu
-    while count < limit:
-        
-        # 1. Wykonujemy ruch (prosta wersja: losowy sąsiad + tabu check)
-        # Kopiujemy macierz, żeby sprawdzić ruch
+    while iter_count < limit:
         candidate_matrix = current_matrix.copy()
-        candidate_matrix, move = flip_edge_matrix(candidate_matrix, n)
+        candidate_matrix, move = swap_edge_matrix(candidate_matrix, n)
+        candidate_energy = get_integrality_energy(candidate_matrix)
         
-        # Sprawdzamy koszt kandydata
-        candidate_cost = get_eigen_cost(candidate_matrix)
-        
-        # Logika Tabu: Akceptujemy jeśli nie jest Tabu LUB jest lepszy niż cokolwiek co widzieliśmy (aspiracja)
         is_tabu = move in tabu_list
+        is_aspiration = candidate_energy < best_energy 
         
-        if (not is_tabu) or (candidate_cost < best_cost - 0.001):
-            # Akceptujemy ruch
+        if (not is_tabu) or is_aspiration:
             current_matrix = candidate_matrix
-            
-            # Aktualizacja Tabu
+            current_energy = candidate_energy
             tabu_list.append(move)
-            if len(tabu_list) > tabu_len:
+            if len(tabu_list) > tabu_tenure:
                 tabu_list.pop(0)
+            
+            if current_energy < best_energy:
+                best_energy = current_energy
+                no_improvement_iter = 0
+            else:
+                no_improvement_iter += 1
                 
-            # Czy to graf całkowity? (Koszt bliski 0)
-            if candidate_cost < 1e-7:
-                # Konwersja do NetworkX dla graph6
+            if current_energy < 1e-7:
                 G_out = nx.from_numpy_array(current_matrix)
-                
-                # Wypisujemy w formacie graph6 BEZ nagłówka
-                output = nx.to_graph6_string(G_out, header=False)
+                # stdout bez zmian (dla sito5)
+                output = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
                 sys.stdout.write(output + '\n')
-                sys.stdout.flush() # Ważne przy pipe
+                sys.stdout.flush()
                 
-                # Restartujemy szukanie z nowego losowego punktu, 
-                # żeby nie wypisywać w kółko tego samego grafu
+                # Restart
                 current_G = nx.gnm_random_graph(n, k)
                 current_matrix = nx.to_numpy_array(current_G)
+                best_energy = get_integrality_energy(current_matrix)
                 tabu_list = []
-                best_cost = get_eigen_cost(current_matrix)
-            
-            # Aktualizacja najlepszego kosztu lokalnego
-            if candidate_cost < best_cost:
-                best_cost = candidate_cost
+                no_improvement_iter = 0
 
-        # Co jakiś czas (np. co 1000 iteracji bez sukcesu) warto zrobić restart,
-        # żeby nie utknąć w minimum lokalnym
-        if count % 2000 == 0:
-             current_G = nx.gnm_random_graph(n, k)
-             current_matrix = nx.to_numpy_array(current_G)
-             tabu_list = []
-        
-        count += 1
+            # --- ZMIANA 2: Dodajemy package_id do wypisu ---
+            elif current_energy < 0.9:
+                G_out = nx.from_numpy_array(current_matrix)
+                g6 = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
+                
+                # Format: PACZKA [ID] ENERGY [WARTOŚĆ] [GRAPH6]
+                sys.stderr.write(f"PACZKA {package_id} ENERGY {current_energy:.5f} {g6}\n")
+                sys.stderr.flush()
+
+        else:
+            no_improvement_iter += 1
+
+        if no_improvement_iter > max_no_imp:
+            current_G = nx.gnm_random_graph(n, k)
+            current_matrix = nx.to_numpy_array(current_G)
+            best_energy = get_integrality_energy(current_matrix)
+            tabu_list = []
+            no_improvement_iter = 0
+            
+        iter_count += 1
 
 if __name__ == "__main__":
     try:
@@ -127,5 +127,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except BrokenPipeError:
-        # Obsługa zamknięcia potoku przez sito5/head
         sys.stderr.close()

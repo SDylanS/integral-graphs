@@ -4,18 +4,26 @@ import sys
 import random
 import numpy as np
 
-# Domyślny limit generacji (iteracji kolonii)
-DEFAULT_LIMIT = 10000
+# Limit generacji (iteracji kolonii)
+DEFAULT_LIMIT = 5000
 
-def get_eigen_cost(adj_matrix):
+def get_integrality_energy(adj_matrix):
     """
-    Funkcja kosztu: suma odchyleń wartości własnych od liczb całkowitych.
-    0.0 oznacza graf całkowity.
+    Funkcja celu z KARĄ ZA NIESPÓJNOŚĆ.
     """
     try:
+        # 1. Sprawdzenie spójności
+        # Tworzymy tymczasowy graf NetworkX
+        G_temp = nx.from_numpy_array(adj_matrix)
+        
+        if not nx.is_connected(G_temp):
+            return 1000.0  # <--- OGROMNA KARA. Mrówki będą uciekać od takich grafów.
+
+        # 2. Obliczenie energii tylko jeśli graf jest spójny
         eigenvalues = np.linalg.eigvalsh(adj_matrix)
-        cost = sum(abs(ev - round(ev)) for ev in eigenvalues)
-        return cost
+        energy = sum(abs(ev - round(ev)) for ev in eigenvalues)
+        return energy
+
     except np.linalg.LinAlgError:
         return float('inf')
 
@@ -23,23 +31,23 @@ def select_edges_probabilistically(n, k, pheromones):
     """
     Mrówka buduje graf wybierając k krawędzi na podstawie poziomu feromonów.
     """
-    # Indeksy górnego trójkąta macierzy (wszystkie możliwe pary wierzchołków)
+    # Indeksy górnego trójkąta (wszystkie możliwe pary)
     rows, cols = np.triu_indices(n, k=1)
     
-    # Pobieramy wartości feromonów dla tych par
+    # Pobieramy feromony dla par
     probs = pheromones[rows, cols]
     
-    # Normalizacja prawdopodobieństw
+    # Normalizacja
     prob_sum = probs.sum()
     if prob_sum == 0:
         probs = np.ones_like(probs) / len(probs)
     else:
         probs = probs / prob_sum
     
-    # Wybór indeksów krawędzi (weighted random sampling bez zwracania)
+    # Losowanie bez zwracania (Weighted Random Sampling)
     selected_indices = np.random.choice(len(rows), size=k, replace=False, p=probs)
     
-    # Budowa macierzy sąsiedztwa
+    # Budowa macierzy
     adj = np.zeros((n, n), dtype=int)
     adj[rows[selected_indices], cols[selected_indices]] = 1
     
@@ -56,9 +64,10 @@ def main():
         n = int(sys.argv[1])
         k = int(sys.argv[2])
         
+        # --- ZMIANA: Pobieranie ID Paczki ---
         arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
+        package_id = arg3
         
-        # Obsługa seeda/limitu
         if '/' in arg3:
             parts = arg3.split('/')
             seed_val = int(parts[0]) + int(parts[1])
@@ -71,48 +80,55 @@ def main():
             np.random.seed(None)
             
     except ValueError:
-        sys.stderr.write("Błąd argumentów.\n")
-        sys.exit(1)
+        return
 
     # --- PARAMETRY ACO ---
-    ants_per_gen = 20       # Liczba mrówek w jednej iteracji
-    evaporation_rate = 0.1  # Szybkość parowania feromonu
+    ants_per_gen = 25       # Liczba mrówek w pokoleniu
+    evaporation_rate = 0.1  # Parowanie
     
-    # Inicjalizacja feromonów (startujemy z 1.0)
+    # Inicjalizacja feromonów (macierz NxN)
     pheromones = np.ones((n, n))
     
-    best_global_cost = float('inf')
+    best_global_energy = float('inf')
     
     generation = 0
     no_improvement_counter = 0
     
     while generation < limit:
         
-        # 1. Konstrukcja rozwiązań przez mrówki
+        # 1. Konstrukcja rozwiązań
         solutions = []
         for _ in range(ants_per_gen):
             adj = select_edges_probabilistically(n, k, pheromones)
-            cost = get_eigen_cost(adj)
-            solutions.append((adj, cost))
+            energy = get_integrality_energy(adj)
+            solutions.append((adj, energy))
             
-            # Sprawdzenie sukcesu (Graf Całkowity)
-            if cost < 1e-7:
+            # --- SUKCES (Energia ~ 0) ---
+            if energy < 1e-7:
                 G_out = nx.from_numpy_array(adj)
-                output = nx.to_graph6_string(G_out, header=False)
+                # Fix dla NetworkX 3.0+
+                output = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
                 sys.stdout.write(output + '\n')
                 sys.stdout.flush()
                 
-                # Restart po znalezieniu
+                # Reset po sukcesie
                 pheromones = np.ones((n, n))
-                best_global_cost = float('inf')
+                best_global_energy = float('inf')
 
-        # 2. Sortowanie mrówek (elitaryzm)
+            # --- BLISKIE ROZWIĄZANIE (Logowanie do stderr) ---
+            elif energy < 0.9:
+                G_out = nx.from_numpy_array(adj)
+                g6 = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
+                sys.stderr.write(f"PACZKA {package_id} ENERGY {energy:.5f} {g6}\n")
+                sys.stderr.flush()
+
+        # 2. Sortowanie mrówek (Najlepsze na początku)
         solutions.sort(key=lambda x: x[1])
-        best_ant_adj, best_ant_cost = solutions[0]
+        best_ant_adj, best_ant_energy = solutions[0]
         
-        # Aktualizacja najlepszego wyniku
-        if best_ant_cost < best_global_cost:
-            best_global_cost = best_ant_cost
+        # Aktualizacja globalnego najlepszego wyniku
+        if best_ant_energy < best_global_energy:
+            best_global_energy = best_ant_energy
             no_improvement_counter = 0
         else:
             no_improvement_counter += 1
@@ -121,18 +137,22 @@ def main():
         # a) Parowanie
         pheromones *= (1.0 - evaporation_rate)
         
-        # b) Wzmacnianie (3 najlepsze mrówki zostawiają ślad)
+        # b) Wzmacnianie (Tylko 3 najlepsze mrówki zostawiają ślad)
         top_ants = solutions[:3]
-        for adj, cost in top_ants:
-            deposit = 1.0 / (cost + 0.5) 
-            pheromones += (adj * deposit) * 0.1 
+        for adj, energy in top_ants:
+            # Im mniejsza energia, tym silniejszy ślad
+            deposit = 1.0 / (energy + 0.5) 
+            # Wzmacniamy krawędzie występujące w dobrych grafach
+            pheromones += (adj * deposit) * 0.2 
 
-        pheromones = np.clip(pheromones, 0.01, 100.0)
+        # Ograniczenie feromonów (żeby nie wybuchły do nieskończoności)
+        pheromones = np.clip(pheromones, 0.01, 50.0)
 
-        # 4. Restart przy stagnacji
-        if no_improvement_counter > 150:
+        # 4. Restart przy stagnacji (gdy feromony zbiegną się do złego minimum)
+        if no_improvement_counter > 200:
             pheromones = np.ones((n, n))
             no_improvement_counter = 0
+            best_global_energy = float('inf')
         
         generation += 1
 

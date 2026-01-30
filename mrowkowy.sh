@@ -1,27 +1,32 @@
 #!/bin/bash
 # KTZ 2025 - Algorytm Mrowkowy (ACO) wrapper
 # Użycie: ./mrowkowy.sh <n> <k> <mod> <start>
-# Np.: ./mrowkowy.sh 15 37 $((2**29)) 0
+
+# Pułapka na Ctrl+C (zabija skrypt natychmiast)
+trap "exit" INT
 
 n=$1
 e=$2
 mod=$3
 pierwszy=$4
 
-# Limit generacji
+# Limit generacji (20k generacji * 25 mrówek = 500k prób, porównywalne z Tabu)
 t=20000
 
 echo czas: $(date)  
-echo "Start generatora mrowkowego dla N=$n K=$e..."
+echo "Start ACO (Energy minimization) dla N=$n K=$e..."
 
 for (( res=$pierwszy; res < $mod ; res+=1 ))
 do 
- # Wywołujemy nowy plik: generatorMrowkowy.py
- # Wynik zapisujemy do: wynikMrowkowy...
- echo "time python3 generatorMrowkowy.py $n $e $res/$mod 2>/dev/null | ./sito5 $t | tee -a wynikMrowkowy$n_$e.txt"
- echo "./checkMrowkowy.sh $n $e $mod $res" > mrowkowy_todo$n_$e.sh
+    cmd="python3 generatorMrowkowy.py $n $e $res/$mod"
+    
+    # stdout -> sito5 (wyniki idealne)
+    # stderr -> plik bliskie_mrowki.txt (analiza minimów lokalnych)
+    
+    echo "time $cmd 2>> bliskie_mrowki.txt | ./sito5 $t | tee -a wynikMrowkowy$n_$e.txt"
+    echo "./checkMrowkowy.sh $n $e $mod $res" > mrowkowy_todo$n_$e.sh
  
- time python3 generatorMrowkowy.py $n $e $res/$mod 2>/dev/null | ./sito5 $t | tee -a wynikMrowkowy$n_$e.txt
+    time $cmd 2>> bliskie_mrowki.txt | ./sito5 $t | tee -a wynikMrowkowy$n_$e.txt
 done 
 
 echo czas: $(date) 

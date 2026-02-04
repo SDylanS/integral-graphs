@@ -8,7 +8,6 @@ e=$2
 mod=$3       # Liczba paczek
 pierwszy=$4  # Start (np. 0)
 
-# UWAGA: Wyżarzanie jest wolne! 
 # t to liczba uruchomień algorytmu SA w jednej paczce.
 # Nie ustawiaj tu 640000, bo nigdy się nie skończy. 100-500 jest OK.
 t=100 

@@ -3,56 +3,59 @@ import networkx as nx
 import sys
 import random
 
-# Domyślny limit, jeśli nie zostanie podany w argumencie
+# Domyślny limit prób w trybie wsadowym
 DEFAULT_LIMIT = 640000
 
 def main():
     if len(sys.argv) < 3:
-        sys.stderr.write("Użycie: python3 generator_gnk.py <n> <k> [limit/seed]\n")
+        sys.stderr.write("Usage: python3 generatorGnk.py <n> <k> [limit/seed]\n")
         sys.exit(1)
 
-    n = int(sys.argv[1])
-    k = int(sys.argv[2])
+    try:
+        n = int(sys.argv[1])
+        k = int(sys.argv[2]) # Liczba krawędzi (m)
 
-    # Argument 3: może być liczbą prób (z gnk.sh) lub seedem (ułamkiem)
-    arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
-    
-    limit = DEFAULT_LIMIT
-    
-    # Logika obsługi argumentu (dostosowana do gnk.sh)
-    if '/' in arg3:
-        # Jeśli podano ułamek (styl geng), używamy go jako seeda
-        parts = arg3.split('/')
-        seed_val = int(parts[0])
-        random.seed(seed_val)
-    else:
-        # Jeśli podano liczbę (styl gnk.sh), traktujemy to jako limit pętli
-        limit = int(arg3)
-        # Seed losujemy, żeby każda paczka była inna
-        random.seed() 
-
-    count = 0
-
-    # Pętla generująca grafy
-    while count < limit:
-        # Generujemy losowy graf G(n, k)
-        G = nx.gnm_random_graph(n, k)
+        # Parsowanie argumentów operacyjnych (Batch ID lub Limit iteracji)
+        arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
         
-        # Sprawdzamy spójność (jak w Twoim przykładzie)
-        if nx.is_connected(G):
-            # Wypisujemy w formacie graph6 BEZ nagłówka
-            output = nx.to_graph6_string(G, header=False)
-            sys.stdout.write(output + '\n')
+        limit = DEFAULT_LIMIT
         
-        # Zliczamy próby (niezależnie czy graf był spójny, czy nie, 
-        # żeby nie utknąć w nieskończoność przy rzadkich grafach)
-        count += 1
+        # Konfiguracja generatora liczb pseudolosowych (PRNG)
+        if '/' in arg3:
+            # Tryb deterministyczny: ziarno oparte na ID paczki (dla powtarzalności eksperymentu)
+            parts = arg3.split('/')
+            seed_val = int(parts[0])
+            random.seed(seed_val)
+        else:
+            # Tryb stochastyczny: losowe ziarno systemowe, określony limit iteracji
+            limit = int(arg3)
+            random.seed() 
+
+        count = 0
+
+        # Pętla próbkowania przestrzeni grafów
+        while count < limit:
+            # Losowanie z modelu G(n, m) Erdősa-Rényiego (rozkład jednostajny)
+            G = nx.gnm_random_graph(n, k)
+            
+            # Weryfikacja topologii (odrzucenie grafów niespójnych)
+            if nx.is_connected(G):
+                # Serializacja do formatu graph6 (kompatybilność z NetworkX 3.x)
+                output = nx.to_graph6_bytes(G, header=False).decode('ascii').strip()
+                sys.stdout.write(output + '\n')
+            
+            count += 1
+
+    except ValueError:
+        sys.stderr.write("Error: Invalid arguments provided.\n")
+        sys.exit(1)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
+        # Obsługa sygnału SIGINT
         pass
     except BrokenPipeError:
-        # Obsługa zamknięcia potoku przez sito5/head
+        # Obsługa zamknięcia strumienia wyjściowego (np. przez head lub sito5)
         sys.stderr.close()

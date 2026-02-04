@@ -9,17 +9,18 @@ DEFAULT_LIMIT = 5000
 
 def get_integrality_energy(adj_matrix):
     """
-    Funkcja celu z KARĄ ZA NIESPÓJNOŚĆ.
+    Oblicza energię rozwiązania z uwzględnieniem kary za brak spójności.
+    E(G) = suma odległości wartości własnych od liczb całkowitych.
     """
     try:
-        # 1. Sprawdzenie spójności
-        # Tworzymy tymczasowy graf NetworkX
+        # Weryfikacja spójności grafu
         G_temp = nx.from_numpy_array(adj_matrix)
         
         if not nx.is_connected(G_temp):
-            return 1000.0  # <--- OGROMNA KARA. Mrówki będą uciekać od takich grafów.
+            # Wysoka kara wymuszająca poszukiwanie grafów spójnych
+            return 1000.0
 
-        # 2. Obliczenie energii tylko jeśli graf jest spójny
+        # Obliczenie widma i energii dla grafu spójnego
         eigenvalues = np.linalg.eigvalsh(adj_matrix)
         energy = sum(abs(ev - round(ev)) for ev in eigenvalues)
         return energy
@@ -29,29 +30,29 @@ def get_integrality_energy(adj_matrix):
 
 def select_edges_probabilistically(n, k, pheromones):
     """
-    Mrówka buduje graf wybierając k krawędzi na podstawie poziomu feromonów.
+    Konstrukcja stochastyczna grafu na podstawie macierzy feromonowej.
+    Wybór k krawędzi metodą Weighted Random Sampling.
     """
-    # Indeksy górnego trójkąta (wszystkie możliwe pary)
     rows, cols = np.triu_indices(n, k=1)
     
-    # Pobieramy feromony dla par
+    # Pobranie poziomu feromonów dla każdej potencjalnej krawędzi
     probs = pheromones[rows, cols]
     
-    # Normalizacja
+    # Normalizacja prawdopodobieństwa
     prob_sum = probs.sum()
     if prob_sum == 0:
         probs = np.ones_like(probs) / len(probs)
     else:
         probs = probs / prob_sum
     
-    # Losowanie bez zwracania (Weighted Random Sampling)
+    # Losowanie indeksów krawędzi bez zwracania
     selected_indices = np.random.choice(len(rows), size=k, replace=False, p=probs)
     
-    # Budowa macierzy
+    # Konstrukcja macierzy sąsiedztwa
     adj = np.zeros((n, n), dtype=int)
     adj[rows[selected_indices], cols[selected_indices]] = 1
     
-    # Symetryzacja
+    # Symetryzacja macierzy (graf nieskierowany)
     adj = adj + adj.T
     return adj
 
@@ -64,7 +65,7 @@ def main():
         n = int(sys.argv[1])
         k = int(sys.argv[2])
         
-        # --- ZMIANA: Pobieranie ID Paczki ---
+        # Obsługa argumentu seed/limit (format: ID/TOTAL lub INT)
         arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
         package_id = arg3
         
@@ -82,11 +83,11 @@ def main():
     except ValueError:
         return
 
-    # --- PARAMETRY ACO ---
-    ants_per_gen = 25       # Liczba mrówek w pokoleniu
-    evaporation_rate = 0.1  # Parowanie
+    # Parametry algorytmu ACO
+    ants_per_gen = 25       # Rozmiar populacji
+    evaporation_rate = 0.1  # Współczynnik parowania śladu
     
-    # Inicjalizacja feromonów (macierz NxN)
+    # Inicjalizacja macierzy feromonów
     pheromones = np.ones((n, n))
     
     best_global_energy = float('inf')
@@ -96,37 +97,37 @@ def main():
     
     while generation < limit:
         
-        # 1. Konstrukcja rozwiązań
+        # 1. Faza konstrukcji rozwiązań
         solutions = []
         for _ in range(ants_per_gen):
             adj = select_edges_probabilistically(n, k, pheromones)
             energy = get_integrality_energy(adj)
             solutions.append((adj, energy))
             
-            # --- SUKCES (Energia ~ 0) ---
+            # Weryfikacja rozwiązania idealnego (Energia ~ 0)
             if energy < 1e-7:
                 G_out = nx.from_numpy_array(adj)
-                # Fix dla NetworkX 3.0+
+                # Konwersja do formatu graph6 (kompatybilność z NetworkX 3.0+)
                 output = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
                 sys.stdout.write(output + '\n')
                 sys.stdout.flush()
                 
-                # Reset po sukcesie
+                # Reset po znalezieniu rozwiązania
                 pheromones = np.ones((n, n))
                 best_global_energy = float('inf')
 
-            # --- BLISKIE ROZWIĄZANIE (Logowanie do stderr) ---
+            # Logowanie minimów lokalnych (Energia < 0.9) do analizy
             elif energy < 0.9:
                 G_out = nx.from_numpy_array(adj)
                 g6 = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
                 sys.stderr.write(f"PACZKA {package_id} ENERGY {energy:.5f} {g6}\n")
                 sys.stderr.flush()
 
-        # 2. Sortowanie mrówek (Najlepsze na początku)
+        # 2. Sortowanie populacji wg funkcji przystosowania (energii)
         solutions.sort(key=lambda x: x[1])
         best_ant_adj, best_ant_energy = solutions[0]
         
-        # Aktualizacja globalnego najlepszego wyniku
+        # Aktualizacja najlepszego globalnego rozwiązania
         if best_ant_energy < best_global_energy:
             best_global_energy = best_ant_energy
             no_improvement_counter = 0
@@ -134,21 +135,20 @@ def main():
             no_improvement_counter += 1
 
         # 3. Aktualizacja feromonów
-        # a) Parowanie
+        # a) Globalne parowanie (Evaporation)
         pheromones *= (1.0 - evaporation_rate)
         
-        # b) Wzmacnianie (Tylko 3 najlepsze mrówki zostawiają ślad)
+        # b) Wzmacnianie śladu (Reinforcement) przez najlepsze jednostki (Elitism)
         top_ants = solutions[:3]
         for adj, energy in top_ants:
-            # Im mniejsza energia, tym silniejszy ślad
+            # Depozyt odwrotnie proporcjonalny do energii
             deposit = 1.0 / (energy + 0.5) 
-            # Wzmacniamy krawędzie występujące w dobrych grafach
             pheromones += (adj * deposit) * 0.2 
 
-        # Ograniczenie feromonów (żeby nie wybuchły do nieskończoności)
+        # Ograniczenie wartości feromonów (zapobieganie niestabilności numerycznej)
         pheromones = np.clip(pheromones, 0.01, 50.0)
 
-        # 4. Restart przy stagnacji (gdy feromony zbiegną się do złego minimum)
+        # 4. Mechanizm restartu w przypadku stagnacji
         if no_improvement_counter > 200:
             pheromones = np.ones((n, n))
             no_improvement_counter = 0

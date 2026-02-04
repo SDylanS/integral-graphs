@@ -5,7 +5,7 @@ import sys
 import signal
 
 # --- KONFIGURACJA ---
-# Ile sąsiadów sprawdzamy w jednym kroku (zgodnie z Twoim kodem)
+# Ile sąsiadów sprawdzamy w jednym kroku 
 NEIGHBORS_TO_CHECK = 20 
 
 # Obsługa Ctrl+C (czyste wyjście)

@@ -3,71 +3,90 @@ import networkx as nx
 import sys
 import random
 import numpy as np
+import csv
+import json
+import os
 
-# Limit generacji (iteracji kolonii)
+# Limit generacji
 DEFAULT_LIMIT = 5000
+STATS_FILE = "statystyki_populacji.csv"
+BEST_RESULT_FILE = "najlepszy_wynik.json"  # Zmiana rozszerzenia na .json
 
 def get_integrality_energy(adj_matrix):
     """
-    Oblicza energię rozwiązania z uwzględnieniem kary za brak spójności.
-    E(G) = suma odległości wartości własnych od liczb całkowitych.
+    Oblicza energię oraz zwraca spektrum.
     """
     try:
-        # Weryfikacja spójności grafu
+        # Weryfikacja spójności
         G_temp = nx.from_numpy_array(adj_matrix)
-        
         if not nx.is_connected(G_temp):
-            # Wysoka kara wymuszająca poszukiwanie grafów spójnych
-            return 1000.0
+            return 1000.0, []
 
-        # Obliczenie widma i energii dla grafu spójnego
         eigenvalues = np.linalg.eigvalsh(adj_matrix)
+        # Energia = suma odległości od najbliższej liczby całkowitej
         energy = sum(abs(ev - round(ev)) for ev in eigenvalues)
-        return energy
+        return energy, eigenvalues
 
     except np.linalg.LinAlgError:
-        return float('inf')
+        return float('inf'), []
 
 def select_edges_probabilistically(n, k, pheromones):
-    """
-    Konstrukcja stochastyczna grafu na podstawie macierzy feromonowej.
-    Wybór k krawędzi metodą Weighted Random Sampling.
-    """
     rows, cols = np.triu_indices(n, k=1)
-    
-    # Pobranie poziomu feromonów dla każdej potencjalnej krawędzi
     probs = pheromones[rows, cols]
     
-    # Normalizacja prawdopodobieństwa
     prob_sum = probs.sum()
     if prob_sum == 0:
         probs = np.ones_like(probs) / len(probs)
     else:
         probs = probs / prob_sum
     
-    # Losowanie indeksów krawędzi bez zwracania
     selected_indices = np.random.choice(len(rows), size=k, replace=False, p=probs)
     
-    # Konstrukcja macierzy sąsiedztwa
     adj = np.zeros((n, n), dtype=int)
     adj[rows[selected_indices], cols[selected_indices]] = 1
-    
-    # Symetryzacja macierzy (graf nieskierowany)
     adj = adj + adj.T
     return adj
 
+def save_best_result(adj, energy, spectrum, generation, filename):
+    """
+    Zapisuje graf wraz ze szczegółowymi parametrami do pliku JSON.
+    """
+    n = adj.shape[0]
+    G = nx.from_numpy_array(adj)
+    g6 = nx.to_graph6_bytes(G, header=False).decode('ascii').strip()
+    
+    # Czy jest całkowity? (z tolerancją błędu numerycznego)
+    is_integral = bool(energy < 1e-9)
+    
+    # "W jakim stopniu?" - Średnie odchylenie na jedną wartość własną
+    # Im bliżej 0, tym bardziej "całkowity" jest graf.
+    mean_deviation = energy / n if n > 0 else 0
+
+    data = {
+        "graph6": g6,
+        "is_integral": is_integral,
+        "energy_total": round(energy, 6),
+        "mean_deviation": round(mean_deviation, 6), # Stopień "całkowitości"
+        "generation_found": generation,
+        "spectrum": [round(x, 4) for x in spectrum], # Zaokrąglenie dla czytelności JSON
+        "nodes": int(n),
+        "edges": int(np.sum(adj) // 2)
+    }
+
+    with open(filename, 'w') as f:
+        json.dump(data, f, indent=4)
+    
+    return data
+
 def main():
     if len(sys.argv) < 3:
-        sys.stderr.write("Użycie: python3 generatorMrowkowy.py <n> <k> [limit/seed]\n")
+        print("Użycie: python3 generator.py <n> <k> [limit/seed]")
         sys.exit(1)
 
     try:
         n = int(sys.argv[1])
         k = int(sys.argv[2])
-        
-        # Obsługa argumentu seed/limit (format: ID/TOTAL lub INT)
         arg3 = sys.argv[3] if len(sys.argv) > 3 else str(DEFAULT_LIMIT)
-        package_id = arg3
         
         if '/' in arg3:
             parts = arg3.split('/')
@@ -83,76 +102,79 @@ def main():
     except ValueError:
         return
 
-    # Parametry algorytmu ACO
-    ants_per_gen = 25       # Rozmiar populacji
-    evaporation_rate = 0.1  # Współczynnik parowania śladu
-    
-    # Inicjalizacja macierzy feromonów
+    ants_per_gen = 30
+    evaporation_rate = 0.1
     pheromones = np.ones((n, n))
     
     best_global_energy = float('inf')
     
+    # Inicjalizacja pliku statystyk
+    with open(STATS_FILE, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Generation", "MinEnergy", "AvgEnergy", "StdDevEnergy"])
+
+    print(f"Start: n={n}, k={k}. Wyniki w: {BEST_RESULT_FILE}")
+
     generation = 0
-    no_improvement_counter = 0
-    
+    no_improvement = 0
+
     while generation < limit:
+        population_results = []
         
-        # 1. Faza konstrukcji rozwiązań
-        solutions = []
         for _ in range(ants_per_gen):
             adj = select_edges_probabilistically(n, k, pheromones)
-            energy = get_integrality_energy(adj)
-            solutions.append((adj, energy))
+            energy, spectrum = get_integrality_energy(adj)
+            population_results.append({
+                "adj": adj,
+                "energy": energy,
+                "spectrum": spectrum
+            })
+
+        population_results.sort(key=lambda x: x["energy"])
+        best_ant = population_results[0]
+        
+        # Logowanie statystyk
+        energies = [p["energy"] for p in population_results if p["energy"] < 900]
+        if not energies: energies = [1000.0]
+        
+        with open(STATS_FILE, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([generation, np.min(energies), np.mean(energies), np.std(energies)])
+
+        # Sprawdzenie rekordu
+        if best_ant["energy"] < best_global_energy:
+            best_global_energy = best_ant["energy"]
+            no_improvement = 0
             
-            # Weryfikacja rozwiązania idealnego (Energia ~ 0)
-            if energy < 1e-7:
-                G_out = nx.from_numpy_array(adj)
-                # Konwersja do formatu graph6 (kompatybilność z NetworkX 3.0+)
-                output = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
-                sys.stdout.write(output + '\n')
-                sys.stdout.flush()
-                
-                # Reset po znalezieniu rozwiązania
-                pheromones = np.ones((n, n))
-                best_global_energy = float('inf')
-
-            # Logowanie minimów lokalnych (Energia < 0.9) do analizy
-            elif energy < 0.9:
-                G_out = nx.from_numpy_array(adj)
-                g6 = nx.to_graph6_bytes(G_out, header=False).decode('ascii').strip()
-                sys.stderr.write(f"PACZKA {package_id} ENERGY {energy:.5f} {g6}\n")
-                sys.stderr.flush()
-
-        # 2. Sortowanie populacji wg funkcji przystosowania (energii)
-        solutions.sort(key=lambda x: x[1])
-        best_ant_adj, best_ant_energy = solutions[0]
-        
-        # Aktualizacja najlepszego globalnego rozwiązania
-        if best_ant_energy < best_global_energy:
-            best_global_energy = best_ant_energy
-            no_improvement_counter = 0
+            # ZAPIS ROZSZERZONYCH PARAMETRÓW
+            saved_data = save_best_result(
+                best_ant["adj"], 
+                best_ant["energy"], 
+                best_ant["spectrum"], 
+                generation, 
+                BEST_RESULT_FILE
+            )
+            
+            print(f"GEN {generation}: Nowy rekord! Energia: {best_global_energy:.5f}")
+            print(f" -> Stopień całkowitości (odchylenie/wierzchołek): {saved_data['mean_deviation']:.5f}")
+            
+            if best_global_energy < 1e-9:
+                print("!!! ZNALEZIONO GRAF CAŁKOWITY !!!")
         else:
-            no_improvement_counter += 1
+            no_improvement += 1
 
-        # 3. Aktualizacja feromonów
-        # a) Globalne parowanie (Evaporation)
+        # Aktualizacja feromonów
         pheromones *= (1.0 - evaporation_rate)
-        
-        # b) Wzmacnianie śladu (Reinforcement) przez najlepsze jednostki (Elitism)
-        top_ants = solutions[:3]
-        for adj, energy in top_ants:
-            # Depozyt odwrotnie proporcjonalny do energii
-            deposit = 1.0 / (energy + 0.5) 
-            pheromones += (adj * deposit) * 0.2 
+        top_elite = population_results[:4]
+        for ant in top_elite:
+            if ant["energy"] > 900: continue
+            deposit = 1.0 / (ant["energy"] + 0.1)
+            pheromones += (ant["adj"] * deposit) * 0.3
+        pheromones = np.clip(pheromones, 0.05, 20.0)
 
-        # Ograniczenie wartości feromonów (zapobieganie niestabilności numerycznej)
-        pheromones = np.clip(pheromones, 0.01, 50.0)
-
-        # 4. Mechanizm restartu w przypadku stagnacji
-        if no_improvement_counter > 200:
+        if no_improvement > 300:
             pheromones = np.ones((n, n))
-            no_improvement_counter = 0
-            best_global_energy = float('inf')
+            no_improvement = 0
         
         generation += 1
 
@@ -160,6 +182,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        pass
-    except BrokenPipeError:
-        sys.stderr.close()
+        print("\nPrzerwano.")

@@ -1,1 +1,1 @@
-./checkMrowkowy.sh 15 37 536870912 1825
+./checkMrowkowy.sh 15 37 536870912 140
